@@ -82,12 +82,16 @@ int main(int argc, char** argv) {
         int status;
         pid_t exitedPid = wait(&status);
         if (exitedPid == -1) {
+            // No more children to wait for -> stop waiting
             if (errno == ECHILD) {
                 break;
             }
+
+            // Error occured while waiting
             cerr << "Error while waiting for child processes" << endl;
             exit(EXIT_FAILURE);
         } else {
+            // If child process did not exit successfully, print error message and exit with failure
             if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
                 cerr << "Sub-process with PID " << exitedPid << " failed" << endl;
                 exit(EXIT_FAILURE);
