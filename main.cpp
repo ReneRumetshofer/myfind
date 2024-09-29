@@ -9,12 +9,30 @@
 #include <filesystem>
 #include <algorithm>
 #include <sys/wait.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <sys/types.h>
+#include <cstring>
+
+const key_t MSG_QUEUE_KEY = ftok("progfile", 65); // Generate unique key
+#define MSG_QUEUE_PERMISSIONS 0666
+#define MSG_PAYLOAD_MAX_SIZE 1024
+#define CHILD_MESSAGE_TYPE 1
 
 using namespace std;
 namespace fs = std::filesystem;
 
+typedef struct {
+    long messageType;
+    char childMessage[MSG_PAYLOAD_MAX_SIZE];
+} child_message_t;
+
+int msgQueueId;
+
 void printUsage(string programName);
 void searchFile(bool caseInsensitiveMode, bool recursiveMode, string searchPath, string file);
+void sendMessageViaQueue(int messageQueueId, const string message);
+void cleanupAndExit(int exitCode);
 
 int main(int argc, char** argv) {
     bool caseInsensitiveMode = false;
@@ -61,6 +79,13 @@ int main(int argc, char** argv) {
         exit(EXIT_FAILURE);
     }
 
+    // Create message queue
+    msgQueueId = msgget(MSG_QUEUE_KEY, MSG_QUEUE_PERMISSIONS | IPC_CREAT | IPC_EXCL);
+    if(msgQueueId == -1) {
+        cerr << "Error while creating message queue" << endl;
+        exit(EXIT_FAILURE);
+    }
+
     // Fork for each file to search for
     for (auto it = filePaths.begin(); it != filePaths.end(); it++) {
         pid_t pid = fork();
@@ -77,10 +102,22 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Wait for all child processes to finish
+    // Receive found paths (via msg queue) and wait for all child processes to finish
+    child_message_t receivedMessage;
     while(true) {
+        // Receive message with NO_WAIT to avoid blocking
+        int msgReceiveSuccess = msgrcv(msgQueueId, &receivedMessage, sizeof(receivedMessage) - sizeof(long), CHILD_MESSAGE_TYPE, IPC_NOWAIT);
+        if (msgReceiveSuccess != -1) {
+            cout << receivedMessage.childMessage;
+        }
+        // No message available, but errno is set -> error
+        else if(msgReceiveSuccess == -1 && errno != ENOMSG) {
+            cerr << "Error while receiving message" << endl;
+            cleanupAndExit(EXIT_FAILURE);
+        }
+
         int status;
-        pid_t exitedPid = wait(&status);
+        pid_t exitedPid = waitpid(-1, &status, WNOHANG); // Wait for any child by using -1
         if (exitedPid == -1) {
             // No more children to wait for -> stop waiting
             if (errno == ECHILD) {
@@ -89,17 +126,16 @@ int main(int argc, char** argv) {
 
             // Error occured while waiting
             cerr << "Error while waiting for child processes" << endl;
-            exit(EXIT_FAILURE);
-        } else {
-            // If child process did not exit successfully, print error message and exit with failure
-            if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-                cerr << "Sub-process with PID " << exitedPid << " failed" << endl;
-                exit(EXIT_FAILURE);
-            }
+            cleanupAndExit(EXIT_FAILURE);
+        }
+
+        // Check if a child has exited at all (exitedPid > 0) and if so whether it exited successfully
+        if (exitedPid > 0 && WIFEXITED(status) && WEXITSTATUS(status) != EXIT_SUCCESS) {
+            cerr << "Child process with PID " << exitedPid << " exited with status " << WEXITSTATUS(status) << endl;
         }
     }
 
-    exit(EXIT_SUCCESS);
+    cleanupAndExit(EXIT_SUCCESS);
 }
 
 void printUsage(string programName) {
@@ -137,11 +173,42 @@ void searchFile(bool caseInsensitiveMode, bool recursiveMode, string searchPath,
 
             // File match -> print resulting path
             if (entry.is_regular_file() && currentFileName == fileNameToSearch) {
-                std::cout << "File found: " << entry.path() << std::endl;
+                stringstream foundTextStream;
+                foundTextStream << "File found: " << entry.path() << endl;
+                string foundText = foundTextStream.str();
+
+                // Send foundText via message queue to avoid buffer corruption
+                // sendMessageViaQueue(msgQueueId, foundText);
             }
         }
     } catch (const fs::filesystem_error& err) {
         // File system error will be printed
         cerr << "Error: " << err.what() << endl;
     }
+}
+
+void sendMessageViaQueue(int messageQueueId, const string message) {
+    // Construct message via converting the string to a char array in a safe manner
+    // Message must be null terminated, which might not be the case when using strncpy (reaching the limit)
+    child_message_t foundTextMessage;
+    foundTextMessage.messageType = CHILD_MESSAGE_TYPE;
+    strncpy(foundTextMessage.childMessage, message.c_str(), MSG_PAYLOAD_MAX_SIZE);
+    foundTextMessage.childMessage[MSG_PAYLOAD_MAX_SIZE - 1] = '\0';
+
+    int msgSendSuccess = msgsnd(msgQueueId, &foundTextMessage, sizeof(foundTextMessage) - sizeof(long), IPC_NOWAIT);
+    if (msgSendSuccess == -1) {
+        // Msg send failed -> still use buffer as queue cannot be used
+        cerr << "Error while sending message" << endl;
+        exit(EXIT_FAILURE);
+    }
+}
+
+// Needed to remove message queue to avoid accumulation
+void cleanupAndExit(int exitCode) {
+    // Remove message queue
+    if(msgctl(msgQueueId, IPC_RMID, NULL) == -1) {
+        cerr << "Error while removing message queue" << endl;
+    }
+
+    exit(exitCode);
 }
