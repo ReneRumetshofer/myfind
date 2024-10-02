@@ -178,7 +178,7 @@ void searchFile(bool caseInsensitiveMode, bool recursiveMode, string searchPath,
                 string foundText = foundTextStream.str();
 
                 // Send foundText via message queue to avoid buffer corruption
-                // sendMessageViaQueue(msgQueueId, foundText);
+                sendMessageViaQueue(msgQueueId, foundText);
             }
         }
     } catch (const fs::filesystem_error& err) {
