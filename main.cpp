@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
 void printUsage(string programName) {
     cerr << "Usage: " << programName << " [OPTIONS] searchpath file1 file2 ..." << endl;
     cerr << "Options:" << endl;
-    cerr << "  -i: interactive mode" << endl;
+    cerr << "  -i: case-insensitive mode" << endl;
     cerr << "  -R: recursive mode (includes sub-folders)" << endl;
     cerr << "Arguments:" << endl;
     cerr << "  searchpath: path to search for files" << endl;
